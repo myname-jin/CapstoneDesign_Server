@@ -1,17 +1,18 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, BackgroundTasks, Form 
 from fastapi.responses import JSONResponse, FileResponse
 import uvicorn
 from contextlib import asynccontextmanager
 from pathlib import Path
 import uuid 
 import os 
+import json
 from fastapi.middleware.cors import CORSMiddleware 
 
 # 유틸리티 및 모델 로더 임포트
 from utils.helpers import setup_temp_dirs, create_session_dirs, save_upload_file
 from processing.face_analyzer import setup_face_landmarker
 from processing.audio_analyzer import load_local_whisper_model
-from processing.ai_scorer import is_gemini_configured # ⭐️ [수정] Gemini로 변경
+from processing.ai_scorer import is_openai_configured 
 
 # [신규] 분리된 태스크 매니저 임포트
 from processing.task_manager import run_analysis_task, job_status
@@ -21,6 +22,10 @@ BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ⭐️ [추가] Windows에서 torch/uvicorn reload 충돌 방지
+    if os.name == 'nt':
+        os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
     print("="*50)
     print("서버가 시작되었습니다. (http://127.0.0.1:8000)")
     print("="*50)
@@ -31,10 +36,10 @@ async def lifespan(app: FastAPI):
         # AI 2: 로컬 Whisper 모델 로드
         load_local_whisper_model()
         
-        # AI 3: Gemini (키 확인)
-        if not is_gemini_configured(): # ⭐️ [수정] Gemini로 변경
+        # AI 3: OpenAI (키 확인)
+        if not is_openai_configured(): 
             print("="*50)
-            print("⚠️  경고: GEMINI_API_KEY가 없습니다. (AI 채점 기능은 비활성화됩니다)") # ⭐️ [수정]
+            print("⚠️  경고: OPENAI_API_KEY가 없습니다. (AI 채점 기능은 비활성화됩니다)") 
             print("="*50)
     except Exception as e:
         print(f"❌ 치명적 오류: AI 모델 로드 실패! {e}")
@@ -62,24 +67,40 @@ async def read_index():
     return FileResponse(html_file_path)
 
 @app.post("/upload", summary="비디오 분석 작업 시작")
-def upload_and_analyze_video(background_tasks: BackgroundTasks, videoFile: UploadFile = File(...)):
+# ⭐️ [수정] criteriaJson을 Form 데이터로 받음
+def upload_and_analyze_video(
+    background_tasks: BackgroundTasks, 
+    videoFile: UploadFile = File(...),
+    criteriaJson: str = Form("[]") # 폼에서 JSON 문자열을 받습니다. (기본값 빈 배열)
+):
     
     video_dir, frame_dir = create_session_dirs()
     safe_filename = videoFile.filename or "uploaded_video"
     video_path = Path(os.path.join(video_dir, safe_filename))
     
     try:
+        # ⭐️ 1. JSON 문자열 파싱 (빈 문자열이 넘어올 경우 빈 리스트로 처리)
+        custom_criteria = json.loads(criteriaJson if criteriaJson else "[]")
+
+        # 2. 파일 저장
         print(f"\n[작업 접수] 파일: {videoFile.filename}")
+        print(f"   > 채점 기준 항목 수: {len(custom_criteria) if custom_criteria else '기본 기준 사용'}")
         save_upload_file(videoFile, video_path)
         
         job_id = str(uuid.uuid4())
         job_status[job_id] = {"status": "Pending", "message": "0/6: 작업 대기 중..."} 
         
-        background_tasks.add_task(run_analysis_task, job_id, video_path, frame_dir, video_dir)
+        # ⭐️ 3. 백그라운드 태스크에 custom_criteria 전달
+        background_tasks.add_task(run_analysis_task, job_id, video_path, frame_dir, video_dir, custom_criteria)
         
         print(f"   > Job ID 발급: {job_id}")
         return {"job_id": job_id}
 
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="잘못된 JSON 형식의 채점 기준이 전달되었습니다."
+        )
     except Exception as e:
         print(f"❌❌❌ [업로드 실패] 오류: {e}")
         raise HTTPException(
@@ -94,15 +115,16 @@ def get_status(job_id: str):
     if not status:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="작업 ID를 찾을 수 없습니다.")
     
+    # 작업 완료/에러 시 메모리에서 제거
     if status["status"] == "Complete" or status["status"] == "Error":
-        return job_status.pop(job_id) # 완료/에러 시 메모리에서 제거
-    
+        return job_status.pop(job_id)
+        
     return status
 
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="0.0.0.0", # ⭐️ 외부 접속 허용 (팀원 테스트용)
+        host="0.0.0.0", 
         port=8000,
         reload=True
     )

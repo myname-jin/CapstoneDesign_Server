@@ -5,16 +5,16 @@ import time as timer
 from processing.video_analyzer import extract_all_frames, extract_audio
 from processing.face_analyzer import analyze_image
 from processing.audio_analyzer import transcribe_audio_with_timestamps, analyze_prosody_for_segments
-from processing.ai_scorer import get_ai_score, is_gemini_configured # ⭐️ [수정] Gemini로 변경
+from processing.ai_scorer import get_ai_score, is_openai_configured
 from processing.data_combiner import align_data
 from utils.helpers import cleanup_dirs
 
 FRAME_RATE = 5
 job_status = {} # 작업 상태를 main.py 대신 여기서 관리
 
-def run_analysis_task(job_id: str, video_path: Path, frame_dir: Path, video_dir: Path):
+# ⭐️ [수정] custom_criteria 인자 추가
+def run_analysis_task(job_id: str, video_path: Path, frame_dir: Path, video_dir: Path, custom_criteria: list):
     """
-    [❗️ main.py에서 이동됨 ❗️]
     전체 분석 파이프라인을 실행하는 백그라운드 작업입니다.
     (총 6단계로 구성)
     """
@@ -56,7 +56,7 @@ def run_analysis_task(job_id: str, video_path: Path, frame_dir: Path, video_dir:
         job_status[job_id] = {"status": "Analyzing", "message": "4/6: ❗️로컬 음성 인식 실행 중... (시간 소요)❗️"}
         audio_segments, whisper_error = transcribe_audio_with_timestamps(str(audio_path))
         
-        ai_report_message = "" # AI 채점 실패 시 사용할 기본 메시지
+        ai_report_message = ""
         if whisper_error:
             print(f"   > [4/6] ❗️ 음성 인식 오류: {whisper_error}")
             audio_segments = []
@@ -75,14 +75,15 @@ def run_analysis_task(job_id: str, video_path: Path, frame_dir: Path, video_dir:
         aligned_data = align_data(all_vision_results, audio_segments)
         
         # 6-2. AI 채점
-        if is_gemini_configured(): # ⭐️ [수정] Gemini로 변경
-            ai_result = get_ai_score(aligned_data)
+        if is_openai_configured():
+            # ⭐️ [수정] custom_criteria를 get_ai_score에 전달
+            ai_result = get_ai_score(aligned_data, custom_criteria)
         else:
-            # Whisper는 성공했으나 Gemini 키가 없는 경우
+            # Whisper는 성공했으나 OpenAI 키가 없는 경우
             if not whisper_error:
-                ai_report_message = "## 🤖 음성/표정/운율 분석 완료\n\nGemini API 키가 설정되지 않아 **AI 자동 채점 기능은 비활성화**되었습니다. \n\n대본, 시선/표정, 목소리 떨림 데이터 추출은 정상적으로 완료되었습니다." # ⭐️ [수정]
+                ai_report_message = "## 🤖 음성/표정/운율 분석 완료\n\nOpenAI API 키가 설정되지 않아 **AI 자동 채점 기능은 비활성화**되었습니다. \n\n대본, 시선/표정, 목소리 떨림 데이터 추출은 정상적으로 완료되었습니다."
             
-            ai_result = {"ai_feedback": ai_report_message} # whisper_error가 있을 경우 해당 메시지 사용
+            ai_result = {"ai_feedback": ai_report_message}
         
         print("   > [6/6] ✅ 데이터 정렬 및 AI 채점 완료.")
 

@@ -68,6 +68,49 @@
         table { width:100%; border-collapse:collapse; font-family:var(--mono); }
         td { padding:4px 6px; border-bottom:1px dashed #e5e7eb; font-size:12px; }
         td.r { text-align:right; color:#000; font-weight: 500;}
+
+        /* ⭐️ [신규] 채점 기준 UI 스타일 */
+        .criteria-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            background: #fcfcfc;
+        }
+        .criteria-row input[type="text"],
+        .criteria-row input[type="number"] {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            flex-grow: 1;
+        }
+        .criteria-row input[name="criteria-name"] {
+            flex-grow: 1;
+        }
+        .criteria-row input[name="criteria-desc"] {
+            flex-grow: 3;
+        }
+        .criteria-row input[name="criteria-score"] {
+            width: 70px;
+            flex-grow: 0;
+            text-align: right;
+        }
+        .criteria-row button {
+            padding: 8px 12px;
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        #addCriteriaButton {
+            background-color: #2ecc71;
+            margin-top: 10px;
+        }
     </style>
 </head>
 <body>
@@ -78,6 +121,17 @@
         <h3>1. 분석할 동영상 파일 업로드</h3>
         <form id="uploadForm">
             <input type="file" id="videoFile" name="videoFile" accept="video/*" required>
+
+            <div class="card" style="margin-top: 0; box-shadow: none; border: 1px solid #e0e0e0;">
+                <h4>2. 📊 AI 채점 기준 설정 (1개 ~ 최대 5개)</h4>
+                <div id="criteriaContainer">
+                    </div>
+                <button type="button" id="addCriteriaButton">➕ 채점 기준 추가 (최대 5개)</button>
+                <small style="color: #666; display: block; margin-top: 10px;">* 기본 3가지 기준은 자동으로 채워지며, 삭제 후 최대 5개까지 커스터마이징 가능합니다.</small>
+            </div>
+            
+            <input type="hidden" id="criteriaJson" name="criteriaJson">
+            
             <button type="submit" id="submitButton">AI 분석 시작</button>
         </form>
     </div>
@@ -172,16 +226,20 @@
         const topTable = document.getElementById('topTable');
         const popover = document.getElementById('segment-popover');
         const popoverContent = document.getElementById('popover-content');
+        // ⭐️ 채점 기준 관련 DOM 요소
+        const criteriaContainer = document.getElementById('criteriaContainer');
+        const addCriteriaButton = document.getElementById('addCriteriaButton');
+        const criteriaJsonInput = document.getElementById('criteriaJson');
 
-        // ⭐️ [수정] Jitter/Shimmer 게이지 요소 추가
+
         const bars = {
             smile: document.getElementById('b_smile'), frown: document.getElementById('b_frown'),
             brow_up: document.getElementById('b_brow_up'), brow_down: document.getElementById('b_brow_down'),
             jaw_open: document.getElementById('b_jaw_open'), mouth_open: document.getElementById('b_mouth_open'),
             squint: document.getElementById('b_squint'), gaze_h: document.getElementById('b_gaze_h'),
             gaze_v: document.getElementById('b_gaze_v'),
-            jitter: document.getElementById('b_jitter'),    // ⭐️ [추가]
-            shimmer: document.getElementById('b_shimmer'),  // ⭐️ [추가]
+            jitter: document.getElementById('b_jitter'),
+            shimmer: document.getElementById('b_shimmer'),
         };
         const nums = {
             smile: document.getElementById('n_smile'), frown: document.getElementById('n_frown'),
@@ -189,8 +247,8 @@
             jaw_open: document.getElementById('n_jaw_open'), mouth_open: document.getElementById('n_mouth_open'),
             squint: document.getElementById('n_squint'), gaze_h: document.getElementById('n_gaze_h'),
             gaze_v: document.getElementById('n_gaze_v'),
-            jitter: document.getElementById('n_jitter'),    // ⭐️ [추가]
-            shimmer: document.getElementById('n_shimmer'),  // ⭐️ [추가]
+            jitter: document.getElementById('n_jitter'),
+            shimmer: document.getElementById('n_shimmer'),
         };
 
         let rawData = [];
@@ -198,14 +256,93 @@
         let videoObjectUrl = null;
         let pollingInterval = null;
 
-        // 폼 제출 이벤트
+        // ⭐️ [신규] 기본 채점 기준 초기화 및 관리 로직
+        const MAX_CRITERIA = 5;
+        let criteriaCount = 0;
+
+        function addCriteriaRow(name = '', description = '', score = 10, isInitial = false) {
+            if (criteriaCount >= MAX_CRITERIA) {
+                if (!isInitial) {
+                    alert(`채점 기준은 최대 ${MAX_CRITERIA}개까지만 추가할 수 있습니다.`);
+                }
+                return;
+            }
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'criteria-row';
+            wrapper.dataset.index = criteriaCount;
+
+            wrapper.innerHTML = `
+                <input type="text" name="criteria-name" placeholder="기준명 (예: 창의력)" value="${name}" required>
+                <input type="text" name="criteria-desc" placeholder="기준 설명 (GPT가 채점할 때 참고)" value="${description}" required>
+                <input type="number" name="criteria-score" placeholder="만점 기준" value="${score}" min="1" max="100" required>
+                ${isInitial ? '' : '<button type="button" class="remove-criteria-btn">삭제</button>'}
+            `;
+
+            criteriaContainer.appendChild(wrapper);
+            criteriaCount++;
+            updateCriteriaButtonState();
+            
+            // 삭제 버튼 이벤트 리스너 추가
+            if (!isInitial) {
+                wrapper.querySelector('.remove-criteria-btn').addEventListener('click', (e) => {
+                    criteriaContainer.removeChild(wrapper);
+                    criteriaCount--;
+                    updateCriteriaButtonState();
+                    e.stopPropagation(); 
+                });
+            }
+        }
+        
+        function updateCriteriaButtonState() {
+            addCriteriaButton.disabled = criteriaCount >= MAX_CRITERIA;
+            addCriteriaButton.textContent = criteriaCount >= MAX_CRITERIA ? `최대 ${MAX_CRITERIA}개 설정됨` : '➕ 채점 기준 추가 (최대 5개)';
+        }
+
+        // 기본 기준 설정
+        addCriteriaRow('시선 처리', 'gaze_h/v가 -0.1~0.1 사이인 정면 응시 비율을 평가', 25, true);
+        addCriteriaRow('표정 관리', 'smile, frown 수치를 보고 긍정적/부정적 표정을 평가', 25, true);
+        addCriteriaRow('전달력 및 속도', 'jitter/shimmer, speech_rate_cps를 기준으로 목소리 안정성 및 속도를 평가', 50, true);
+
+        addCriteriaButton.addEventListener('click', () => addCriteriaRow());
+        
+        // ⭐️ [신규] 폼 제출 시 기준 데이터를 JSON으로 변환하여 숨겨진 필드에 저장
+        function collectCriteriaData() {
+            const criteria = [];
+            const rows = criteriaContainer.querySelectorAll('.criteria-row');
+            rows.forEach(row => {
+                const name = row.querySelector('input[name="criteria-name"]').value.trim();
+                const desc = row.querySelector('input[name="criteria-desc"]').value.trim();
+                let score = parseInt(row.querySelector('input[name="criteria-score"]').value);
+                
+                if (name && desc && !isNaN(score) && score > 0) {
+                    // 점수 범위 제한
+                    score = Math.min(100, Math.max(1, score));
+                    criteria.push({ name: name, description: desc, score: score });
+                }
+            });
+            
+            // 기준이 하나도 없을 경우 빈 문자열을 저장 (백엔드에서 기본 기준 사용)
+            criteriaJsonInput.value = criteria.length > 0 ? JSON.stringify(criteria) : "";
+        }
+
+
+        // フォーム送信イベント
         uploadForm.addEventListener('submit', async function(event) {
             event.preventDefault();
+            
+            // ⭐️ 1. 기준 데이터 수집 및 JSON 필드 업데이트
+            collectCriteriaData();
+
             const file = videoFile.files[0];
             if (!file) { alert('동영상 파일을 선택해주세요.'); return; }
+            
             const formData = new FormData();
             formData.append('videoFile', file);
-            setLoadingState(true, '0/6: 서버에 작업 요청 중...'); // ⭐️ 6단계로 수정
+            // ⭐️ 2. JSON 문자열도 FormData에 추가하여 전송
+            formData.append('criteriaJson', criteriaJsonInput.value); 
+            
+            setLoadingState(true, '0/6: 서버에 작업 요청 중...'); 
             try {
                 const response = await fetch('/upload', {
                     method: 'POST',
@@ -230,7 +367,7 @@
             }
         });
 
-        // Polling 함수
+        // Polling 함수 (기존 코드와 동일)
         function pollStatus(jobId, file) {
             if (pollingInterval) clearInterval(pollingInterval);
             pollingInterval = setInterval(async () => {
@@ -251,12 +388,10 @@
                     }
                     loadingText.textContent = progressMessage;
 
-                    if (data.status === 'Complete') {
+                    if (data.status === 'Complete' || data.status === 'Error') {
                         clearInterval(pollingInterval);
                         pollingInterval = null;
                         showResults(data.result, file);
-                    } else if (data.status === 'Error') {
-                        throw new Error(data.message);
                     }
                 } catch (error) {
                     clearInterval(pollingInterval);
@@ -267,7 +402,7 @@
             }, 2000);
         }
 
-        // 결과 표시 함수
+        // 결과 표시 함수 (기존 코드와 동일)
         function showResults(data, file) {
             // 1. AI 메시지 표시 (marked.js 사용)
             if (data.ai_assessment && (data.ai_assessment.ai_feedback || data.ai_assessment.error)) {
@@ -287,7 +422,7 @@
             }
             
             // 3. 대본(Transcript) UI 생성
-            transcriptContent.innerHTML = ''; // 초기화
+            transcriptContent.innerHTML = ''; 
             if (data.aligned_transcript_data && data.aligned_transcript_data.length > 0) {
                 alignedTranscriptData = data.aligned_transcript_data;
                 alignedTranscriptData.forEach((segment, index) => {
@@ -340,14 +475,13 @@
             // 1. 프레임별 데이터 UI 업데이트 (시선/표정)
             const frame = findClosestFrame(currentTime);
             if (!frame) {
-                // 게이지 초기화 (운율 지표 제외)
                 Object.keys(bars).filter(k => !k.startsWith('jitter') && !k.startsWith('shimmer')).forEach(key => setGauge(key, 0));
                 Object.keys(bars).filter(k => k.startsWith('gaze')).forEach(key => setGaugeSigned(key, 0));
                 exprEl.textContent = '—'; gazeEl.textContent = '—'; gazeDetailEl.textContent = '';
                 topTable.innerHTML = '';
             } else {
-                updateAllGauges(frame); // 표정/시선 게이지 업데이트
-                updateLabels(frame);    // 표정/시선 레이블 업데이트
+                updateAllGauges(frame); 
+                updateLabels(frame);    
                 if (toggleTop.checked) {
                     updateTop10(frame.all_blendshapes);
                 }
@@ -384,10 +518,9 @@
                 if (currentActiveSegment) {
                     currentActiveSegment.classList.add('active');
                     
-                    // ⭐️ [신규] 활성 세그먼트의 운율 데이터로 게이지 업데이트
                     const segmentData = alignedTranscriptData[currentActiveSegment.dataset.index];
                     if (segmentData && segmentData.prosody) {
-                        // Jitter는 2.0%를 max로, Shimmer는 5.0%를 max로 설정 (넘어가면 100%)
+                        // Jitter는 2.0%를 max로, Shimmer는 5.0%를 max로 설정
                         setGauge('jitter', segmentData.prosody.jitter / 2.0); 
                         setGauge('shimmer', segmentData.prosody.shimmer / 5.0);
                         // 텍스트는 실제 % 값으로 표시
@@ -395,7 +528,7 @@
                         nums['shimmer'].textContent = segmentData.prosody.shimmer.toFixed(2) + '%';
                     }
                 } else {
-                    // ⭐️ [신규] 대본 구간이 아닐 때(쉼 구간) 운율 게이지 초기화
+                    // 대본 구간이 아닐 때(쉼 구간) 운율 게이지 초기화
                     setGauge('jitter', 0);
                     setGauge('shimmer', 0);
                     nums['jitter'].textContent = '0.00%';
@@ -430,7 +563,7 @@
 
             popover.style.display = 'block';
             
-            // 팝오버 위치 계산 (화면 가장자리에 잘리지 않게)
+            // 팝오버 위치 계산 (기존 코드와 동일)
             const popWidth = popover.offsetWidth;
             const popHeight = popover.offsetHeight;
             const margin = 10;
@@ -451,7 +584,7 @@
             popover.style.top = top + 'px';
         }
 
-        // Top-10 토글 버튼 이벤트
+        // Top-10 토글 버튼 이벤트 (기존 코드와 동일)
         toggleTop.addEventListener('change', () => {
             topWrap.style.display = toggleTop.checked ? 'block' : 'none';
         });
@@ -469,7 +602,7 @@
             setGaugeSigned('gaze_v', frame.gaze_v);
         }
 
-        // Top-10 블렌드셰이프 테이블 그리기
+        // Top-10 블렌드셰이프 테이블 그리기 (기존 코드와 동일)
         function updateTop10(blendshapes) {
             if (!blendshapes) {
                 topTable.innerHTML = '';
@@ -483,7 +616,7 @@
             ).join('');
         }
 
-        // 헬퍼 함수: 로딩 상태 설정
+        // 헬퍼 함수: 로딩 상태 설정 (기존 코드와 동일)
         function setLoadingState(isLoading, message) {
             submitButton.disabled = isLoading;
             submitButton.textContent = isLoading ? '분석 중...' : 'AI 분석 시작';
@@ -501,7 +634,7 @@
             }
         }
 
-        // 헬퍼 함수: 현재 시간에 가장 가까운 프레임 데이터 찾기
+        // 헬퍼 함수: 현재 시간에 가장 가까운 프레임 데이터 찾기 (기존 코드와 동일)
         function findClosestFrame(currentTime) {
             if (rawData.length === 0) return null;
             return rawData.reduce((prev, curr) => {
@@ -509,7 +642,7 @@
             });
         }
         
-        // 헬퍼 함수: 레이블 업데이트
+        // 헬퍼 함수: 레이블 업데이트 (기존 코드와 동일)
         function updateLabels(frame) {
             const TH = { smile: 0.25, frown: 0.25, brow_down: 0.2, brow_up: 0.3, squint: 0.3 };
             let exprLabel = '😐 중립';
@@ -535,11 +668,10 @@
             gazeDetailEl.textContent = `h=${frame.gaze_h.toFixed(2)}, v=${frame.gaze_v.toFixed(2)}`;
         }
 
-        // 헬퍼 함수: 게이지 UI 설정
+        // 헬퍼 함수: 게이지 UI 설정 (기존 코드와 동일)
         function setGauge(key, v) {
             if (!nums[key] || !bars[key]) return;
             const value = v || 0;
-            // ⭐️ [수정] Jitter/Shimmer는 % 표시가 이미 있으므로 toFixed(3)을 하지 않음
             if (key !== 'jitter' && key !== 'shimmer') {
                 nums[key].textContent = value.toFixed(3);
             }
