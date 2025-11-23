@@ -4,25 +4,22 @@ import uvicorn
 import uuid 
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, status, BackgroundTasks, Form 
+from fastapi import FastAPI, UploadFile, File, HTTPException, status, BackgroundTasks, Form, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware 
 
 # 유틸리티 및 모델 로더 임포트
-# ⭐️ [수정] helpers 재구성 (기존 helpers에 있는 파일/폴더 관리 함수 유지)
 from utils.helpers import setup_temp_dirs, create_session_dirs, save_upload_file, BASE_DIR 
-
-# ⭐️ [신규] json_helpers 임포트 경로 수정 및 JSON 저장 함수 임포트
-# 'processing.json_helpers' 대신 'utils.json_helpers'로 수정
 from utils.json_helpers import setup_json_dirs, save_criteria_json 
-
 from processing.face_analyzer import setup_face_landmarker
 from processing.audio_analyzer import load_local_whisper_model
 from processing.ai_scorer import is_openai_configured 
-
-# [신규] 분리된 태스크 매니저 임포트
 from processing.task_manager import run_analysis_task, job_status
-# --- 설정 ---
+
+# ⭐️ 지피티 챗봇 기능용 임포트
+
+from processing.chat_manager import ask_gpt
+
 BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
@@ -69,6 +66,13 @@ async def read_index():
         raise HTTPException(status_code=404, detail="index.html 파일을 찾을 수 없습니다.")
     return FileResponse(html_file_path)
 
+@app.get("/chat", include_in_schema=False)
+async def read_chat():
+    html_file_path = os.path.join(BASE_DIR, "chat.html")
+    if not os.path.exists(html_file_path):
+        raise HTTPException(status_code=404, detail="chat.html 파일을 찾을 수 없습니다.")
+    return FileResponse(html_file_path)
+
 @app.post("/upload", summary="비디오 분석 작업 시작")
 def upload_and_analyze_video(
     background_tasks: BackgroundTasks, 
@@ -77,7 +81,6 @@ def upload_and_analyze_video(
     teamName: str = Form(...),         # 팀명
     criteriaJson: str = Form("[]")
 ):
-    
     video_dir, frame_dir = create_session_dirs()
     safe_filename = videoFile.filename or "uploaded_video"
     video_path = Path(os.path.join(video_dir, safe_filename))
@@ -85,10 +88,8 @@ def upload_and_analyze_video(
     try:
         custom_criteria = json.loads(criteriaJson if criteriaJson else "[]")
 
-        # ⭐️ [신규] JSON 파일 저장 로직 실행
         if custom_criteria:
-            # save_criteria_json 함수는 이제 폴더 경로 대신 competitionName만 받습니다.
-            save_criteria_json(custom_criteria, competitionName) 
+            save_criteria_json(custom_criteria, competitionName)
 
         print(f"\n[작업 접수] 파일: {videoFile.filename}")
         print(f"   > 대회/수업명: {competitionName}, 팀명: {teamName}")
@@ -127,6 +128,14 @@ def get_status(job_id: str):
         
     return status
 
+# ⭐️ 지피티 챗봇 기능 API
+@app.post("/chat")
+async def chat(request: Request):
+    data = await request.json()
+    prompt = data.get("message", "")
+    gpt_response = ask_gpt(prompt)
+    return {"response": gpt_response}
+
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
@@ -134,5 +143,7 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
+   
     # .\venv\Scripts\activate    python main.py  http://127.0.0.1:8000
     # pip install -r requirements.txt (라이브러리 설치)
+    # http://127.0.0.1:8000/chat
